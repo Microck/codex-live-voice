@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gpt-live-voice"
+version = "1.0.0"
+description = "Standalone GPT-Live-1 realtime voice engine: broker for `codex app-server` + browser client. Full-duplex voice on a ChatGPT/Codex subscription, no API key."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Synero" }]
+keywords = ["voice", "realtime", "webrtc", "openai", "codex", "gpt-live"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = []  # core is stdlib-only
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110"]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["gptlive"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

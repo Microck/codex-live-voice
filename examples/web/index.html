@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT-Live-1 voice — example</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0b0e14; color: #e6e9ef;
+         display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+  header { padding: 20px; text-align: center; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  #status { font-size: 12px; color: #8b93a7; min-height: 18px; }
+  #status.err { color: #ff6b6b; }
+  #call { margin: 16px; display: flex; gap: 10px; align-items: center; }
+  button { font: inherit; padding: 10px 18px; border-radius: 999px; border: 1px solid #2a3040;
+           background: #151a24; color: inherit; cursor: pointer; }
+  button.primary { background: #2563eb; border-color: #2563eb; }
+  button.danger { background: #dc2626; border-color: #dc2626; }
+  button:disabled { opacity: .5; cursor: default; }
+  select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #2a3040;
+           background: #151a24; color: inherit; }
+  #meter { width: 160px; height: 6px; border-radius: 3px; background: #1c2230; overflow: hidden; }
+  #meterFill { height: 100%; width: 0%; background: #22c55e; transition: width .08s linear; }
+  #transcript { width: min(640px, 92vw); flex: 1; overflow-y: auto; padding: 12px 16px 40px; }
+  .bubble { max-width: 78%; margin: 6px 0; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap;
+            word-break: break-word; font-size: 14px; line-height: 1.45; }
+  .user { background: #2563eb; margin-left: auto; border-bottom-right-radius: 4px; }
+  .bot { background: #1c2230; margin-right: auto; border-bottom-left-radius: 4px; }
+  .tool { color: #8b93a7; font-size: 12px; text-align: center; }
+  .sys { color: #f59e0b; font-size: 12px; text-align: center; }
+  .done-dim { opacity: .72; }
+  footer { font-size: 11px; color: #586074; padding: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GPT-Live-1 voice</h1>
+  <div id="status">idle</div>
+</header>
+
+<div id="call">
+  <select id="voice" aria-label="Voice">
+    <option value="cove">cove</option>
+    <option value="juniper">juniper</option>
+    <option value="maple">maple</option>
+    <option value="spruce">spruce</option>
+    <option value="ember">ember</option>
+    <option value="vale">vale</option>
+    <option value="breeze">breeze</option>
+    <option value="arbor">arbor</option>
+    <option value="sol">sol</option>
+  </select>
+  <select id="language" aria-label="Language">
+    <option value="en">English</option>
+    <option value="es">Español</option>
+  </select>
+  <div id="meter" aria-hidden="true"><div id="meterFill"></div></div>
+  <button id="startBtn" class="primary">Start call</button>
+  <button id="muteBtn" disabled>Mute</button>
+  <button id="hangBtn" class="danger" disabled>Hang up</button>
+</div>
+
+<div id="transcript" aria-live="polite"></div>
+<footer>
+  Needs the broker running: <code>python examples/server.py</code> and a signed-in
+  <code>codex</code> CLI (&ge; 0.154) on the server machine. Audio flows directly
+  between this browser and OpenAI over WebRTC.
+</footer>
+
+<script type="module">
+  import { LiveVoice, V3_VOICES } from '/client/gpt-live-client.js'
+
+  const $ = id => document.getElementById(id)
+  const statusEl = $('status'), transcriptEl = $('transcript')
+  const startBtn = $('startBtn'), hangBtn = $('hangBtn'), muteBtn = $('muteBtn')
+
+  let voice = null
+
+  function render(items) {
+    transcriptEl.innerHTML = ''
+    for (const it of items) {
+      const div = document.createElement('div')
+      div.className = 'bubble ' + (it.role === 'user' ? 'user' : it.role === 'bot' ? 'bot' : it.role)
+      div.textContent = it.text || '…'
+      if (!it.done && (it.role === 'user' || it.role === 'bot')) div.classList.add('done-dim')
+      transcriptEl.appendChild(div)
+    }
+    transcriptEl.scrollTop = transcriptEl.scrollHeight
+  }
+
+  function setStatus(text, isErr = false) {
+    statusEl.textContent = text
+    statusEl.className = isErr ? 'err' : ''
+  }
+
+  startBtn.addEventListener('click', async () => {
+    if (!voice) {
+      voice = new LiveVoice({
+        brokerBase: '/api/voice',
+        onStatus: s => setStatus('connection: ' + s),
+        onNotice: n => setStatus(n, true),
+        onTranscript: render,
+        onUsage: ({ audioMs }) => { /* could render minutes */ },
+      })
+    }
+    startBtn.disabled = true
+    try {
+      setStatus('negotiating…')
+      await voice.start({
+        voice: $('voice').value,
+        language: $('language').value,
+      })
+      hangBtn.disabled = false
+      muteBtn.disabled = false
+      setStatus('live — speak up!')
+    } catch (e) {
+      setStatus(String(e.message || e), true)
+      startBtn.disabled = false
+    }
+  })
+
+  hangBtn.addEventListener('click', async () => {
+    if (!voice) return
+    await voice.close()
+    hangBtn.disabled = true
+    muteBtn.disabled = true
+    startBtn.disabled = false
+    setStatus('call ended')
+  })
+
+  muteBtn.addEventListener('click', () => {
+    if (!voice) return
+    const muted = voice.toggleMute()
+    muteBtn.textContent = muted ? 'Unmute' : 'Mute'
+  })
+
+  // simple mic meter driven by the client's barge-in metering
+  setInterval(() => {
+    if (voice && voice.live && typeof voice.micLevel === 'number') {
+      $('meterFill').style.width = Math.round(voice.micLevel * 100) + '%'
+    } else {
+      $('meterFill').style.width = '0%'
+    }
+  }, 90)
+
+  window.__gptlive = { LiveVoice, V3_VOICES }  // for smoke tests
+</script>
+</body>
+</html>
