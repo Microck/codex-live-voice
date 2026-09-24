@@ -97,8 +97,8 @@ class CodexAppServer:
         self,
         binary: str | None = None,
         spawn: bool = True,
-        client_name: str = "gpt-live-voice",
-        client_version: str = "1.0",
+        client_name: str = "codex-live-voice",
+        client_version: str = "0.1",
         env: dict[str, str] | None = None,
         on_notification=None,
     ) -> None:

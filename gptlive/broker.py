@@ -59,7 +59,8 @@ class LiveBroker:
     ) -> None:
         self.persona: PersonaProvider = persona or DefaultPersona()
         self._owned = app_server is None
-        self.srv = app_server or CodexAppServer()
+        # Defer spawning until the first call so login and status work before a session.
+        self.srv = app_server or CodexAppServer(spawn=False)
         self.request_timeout = request_timeout
         self.agent_model = agent_model
         self.handoff = "server" if str(handoff).lower() == "server" else "client"

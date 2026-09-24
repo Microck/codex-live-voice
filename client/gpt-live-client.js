@@ -386,31 +386,33 @@ export class LiveVoice {
       }
     }
 
-    o.onStatus('offering')
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
     let session
     try {
+      o.onStatus('offering')
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
       session = await this._rest('/session', {
         body: { language: o.language, profile: profile || null, voice: o.voice, offer: offer.sdp },
         timeoutMs: 120000,
       })
+      if (!session?.answer) throw new Error('no SDP answer from broker')
+      await pc.setRemoteDescription({ type: 'answer', sdp: session.answer })
     } catch (e) {
-      try { stream.getTracks().forEach(t => t.stop()) } catch { /* already stopped */ }
+      stream.getTracks().forEach(t => t.stop())
+      pc.close()
+      this._pc = null
+      this._dc = null
       this.live = false
+      if (session?.threadId) {
+        this._rest('/stop', { body: { threadId: session.threadId }, timeoutMs: 8000 }).catch(() => {})
+      }
       throw e
-    }
-    if (!session || !session.answer) {
-      try { stream.getTracks().forEach(t => t.stop()) } catch { /* already stopped */ }
-      this.live = false
-      throw new Error('no SDP answer from broker')
     }
     this._session = session
     this._handoff = session.handoff === 'server' ? 'server' : 'client'
     if (session.handoffDegraded) {
       this.opts.onNotice('this server does not support clientManagedHandoffs; voice tasks may run on the agent ChatGPT lane instead of your client')
     }
-    await pc.setRemoteDescription({ type: 'answer', sdp: session.answer })
 
     // idle-close bubbles so separate interventions don't merge
     const idleTimer = setInterval(() => {

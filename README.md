@@ -1,160 +1,132 @@
-# gpt-live-voice 🎙️
+# codex-live-voice
 
-Standalone **GPT-Live-1 full-duplex voice engine** — deploy live voice into any web app.
+`codex-live-voice` adds two-way voice calls to a web app through a locally signed-in Codex CLI. The Python broker asks `codex app-server` for a realtime session. The browser sends audio to OpenAI over WebRTC. The broker handles signaling, session control, and optional delegation to your app.
 
-Runs `gpt-live-1-codex` realtime sessions on a **ChatGPT/Codex subscription** through the local
-[Codex CLI](https://github.com/openai/codex) app-server: no API key on the voice lane. Audio flows
-**browser ↔ OpenAI directly over WebRTC**; the broker only signals (SDP negotiation + session
-lifecycle). Extracted from the production [hermes-live-voice](https://github.com/Synero/hermes-live-voice)
-plugin so it can be embedded in any application.
+It uses the Codex login in `~/.codex/auth.json` or `$CODEX_HOME/auth.json`. You do not need a separate OpenAI API key for the voice session. The broker runs under your Codex account, so keep its HTTP routes behind your app's access controls.
 
-## Architecture
+[source](https://github.com/Microck/codex-live-voice) | [license](LICENSE)
 
-```
-┌──────────────┐  SDP offer   ┌────────────────────┐   stdio JSON-RPC   ┌──────────────────┐
-│  Browser      │ ──────────▶ │  gptlive broker     │ ─────────────────▶ │ codex app-server │
-│  (your app)   │ ◀────────── │  (FastAPI or your   │                    │  (subscription)  │
-│  WebRTC + v3  │  SDP answer │   own framework)    │                    └────────┬─────────┘
-│  events       │             └────────────────────┘                             │
-└──────┬───────┘                                                                 │
-       │  audio (WebRTC media, direct)                                           │
-       └──────────────────────────────▶ OpenAI realtime ◀────────────────────────┘
-```
+## what is included
 
-Two halves, independently usable:
+- `gptlive/`: Python broker and optional FastAPI router.
+- `client/gpt-live-client.js`: browser WebRTC client with transcript, mute, barge-in, usage, and delegation callbacks.
+- `examples/`: a local demo served on `127.0.0.1:8000`.
 
-- **`gptlive/`** (Python, stdlib-only core) — spawns/locks `codex app-server`, opens threads,
-  negotiates `thread/realtime/start` (protocol v3 → `gpt-live-1-codex`), with the
-  production-hardened retry/recovery paths (unknown-field drops, stale-thread recreation,
-  quota surfacing, stale-session stop+retry). Optional FastAPI adapter (`gptlive.server`).
-- **`client/gpt-live-client.js`** (zero-dependency ESM) — WebRTC session, `oai-events`
-  datachannel, live transcript with v3 bubble semantics (turns rotate; `turn.done` is never
-  trusted to shrink text), client-managed delegation queue, mute, barge-in, usage metering.
-  Framework-agnostic: give it callbacks; render in React/Vue/Svelte/plain DOM yourself.
+The browser sends an SDP offer to the broker. The broker exchanges it with `codex app-server` and returns an SDP answer. After that, audio goes directly between the browser and OpenAI. The browser client has no build step.
 
-## Requirements
+## quickstart
 
-- **Codex CLI ≥ 0.154** on the broker host, logged in: `codex login` (device auth).
-- Python 3.11+ for the broker. The browser half needs no build step.
-
-## Quick start
+Requires Python 3.11 or newer, a browser with microphone and WebRTC support, and Codex CLI 0.154 or newer on the same machine as the broker.
 
 ```bash
-pip install -e ".[server]"       # fastapi only for the example server
-cd examples && bash run.sh       # http://localhost:8000
+git clone https://github.com/Microck/codex-live-voice.git
+cd codex-live-voice
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[server]"
+codex login
+python examples/server.py
 ```
 
-Open the page, allow the mic, **Start call**. First run on a fresh machine: click **Sign in** on
-the auth card (or run `codex login` on the broker host).
+Open `http://127.0.0.1:8000`, allow microphone access, and select **Start call**. The example binds to loopback and rejects browser requests from other origins. Run `codex login` in the same user account that starts the server. If you use `CODEX_HOME`, set it for both commands.
 
-### Embed the server into your own app
+The example is for local use. To put this in a hosted app, use the access dependency shown below. Do not expose the example server or an unprotected router on a public address.
+
+## use it in an app
+
+### FastAPI
+
+Pass a FastAPI dependency that checks the caller before any voice route runs:
 
 ```python
 from fastapi import FastAPI
 from gptlive import mount
+from myapp.auth import require_signed_in_user
 
 app = FastAPI()
-mount(app, prefix="/api/voice", cors_origins=["https://yourapp.example"])
+mount(app, access_dependency=require_signed_in_user, prefix="/api/voice")
 ```
 
-Or use only the broker (any framework — Flask, Litestar, Rails proxy, …):
+The dependency must cover the calling user's access to this Codex account. If your app uses cookies, also protect the state-changing routes against cross-site requests. Limit who can start sessions and how often. The broker uses one Codex app-server lane, so treat it as one active call at a time. `mount` does not choose an authentication scheme for your app. It uses no cross-origin access by default; set `cors_origins` only for trusted frontend origins.
+
+The router exposes:
+
+| method | path | purpose |
+| --- | --- | --- |
+| `GET` | `/status` | Codex availability, login state, voices, handoff mode |
+| `POST` | `/session` | Exchange an SDP offer for an answer and thread ID |
+| `POST` | `/interrupt`, `/stop` | Interrupt a turn or end a session |
+| `GET` | `/auth/status` | Device-login state |
+| `POST` | `/auth/login`, `/auth/login/cancel`, `/auth/logout` | Change the broker user's Codex login |
+| `GET` | `/usage`, `/plan-usage` | Local voice time and Codex plan usage |
+| `POST` | `/usage/report` | Record client-reported voice time |
+
+The auth routes can replace or remove the broker user's `auth.json`. Keep them available only to an operator if regular app users should not control the broker login. Your app can apply route-specific checks inside the access dependency.
+
+### Browser
+
+Serve `client/gpt-live-client.js` as an ES module and point it at your mounted broker:
+
+```js
+import { LiveVoice } from '/client/gpt-live-client.js'
+
+const voice = new LiveVoice({
+  brokerBase: '/api/voice',
+  onStatus: status => console.log(status),
+  onTranscript: items => renderTranscript(items),
+  onDelegation: async request => runTaskInMyApp(request),
+})
+
+await voice.start({ voice: 'cove', language: 'en' })
+// voice.toggleMute(); voice.sendText('hello'); await voice.close()
+```
+
+`onDelegation` is optional. With the default `handoff="client"`, the browser receives delegated work and can return the result to the voice session. If you use `handoff="server"`, the Codex thread agent may run tools on the broker host. Give that mode access only to people you trust to use those tools.
+
+The source checkout keeps the browser module in `client/`. The Python wheel also includes it at `gptlive/client/gpt-live-client.js`, accessible with `importlib.resources.files("gptlive").joinpath("client/gpt-live-client.js")`. Your app is responsible for serving it.
+
+### Python broker without FastAPI
 
 ```python
-from gptlive import LiveBroker, DefaultPersona
+from gptlive import LiveBroker
 
-broker = LiveBroker(persona=DefaultPersona(name="Nova"))
-result = broker.start_session(sdp_offer, voice="cove", language="en")
-# result["answer"] → SDP answer for the browser; result["threadId"] for stop/interrupt
-broker.interrupt_turn(thread_id, turn_id)   # barge-in
-broker.stop_session(thread_id)              # hang up
+broker = LiveBroker()
+try:
+    session = broker.start_session(sdp_offer, voice="cove", language="en")
+    answer = session["answer"]
+    thread_id = session["threadId"]
+    # Send answer to the browser. Later: broker.stop_session(thread_id)
+finally:
+    broker.close()
 ```
 
-### Embed the client into your own frontend
+Pass a `PersonaProvider` to `LiveBroker(persona=...)` to set your product's voice identity. `DefaultPersona` is used otherwise.
 
-```html
-<script type="module">
-  import { LiveVoice } from '/client/gpt-live-client.js'
+## configuration and limits
 
-  const voice = new LiveVoice({
-    brokerBase: '/api/voice',
-    voice: 'cove',                       // V3_VOICES: cove, juniper, maple, spruce, ember, vale, breeze, arbor, sol
-    onStatus: s => console.log('rtc:', s),
-    onTranscript: items => renderBubbles(items),   // [{role: user|bot|tool|sys, text, done}]
-    onUsage: ({ audioMs }) => updateMinutes(audioMs),
-    onDelegation: async req => runInMyAgent(req),  // optional: execute voice-delegated tasks in YOUR app
-  })
-  await voice.start({ language: 'en' })
-  // voice.toggleMute(); voice.sendText('hello'); await voice.close()
-</script>
-```
+| setting | effect |
+| --- | --- |
+| `CODEX_HOME` | Directory containing `auth.json`; defaults to `~/.codex` |
+| `LiveBroker(agent_model=...)` | Selects the Codex thread model |
+| `LiveBroker(handoff=...)` | `client` by default, or `server` for Codex tool execution |
+| `mount(..., data_dir=...)` | Directory for local voice-usage data; defaults to `./data` |
 
-### HTTP surface (when mounted)
+The broker removes `OPENAI_API_KEY` and `CODEX_API_KEY` from the child app-server process so it uses the local Codex login. It does not send `auth.json` to the browser. Session availability still depends on the installed Codex CLI, the signed-in account, and OpenAI's current realtime support and limits. The app-server realtime protocol is experimental and may change.
 
-| method | path | body | returns |
-|---|---|---|---|
-| GET | `/status` | — | codexFound, loggedIn, voices, handoff |
-| POST | `/session` | `{offer, voice?, language?, profile?}` | `{answer, threadId, handoff, droppedFields?, handoffDegraded?, warning?}` |
-| POST | `/interrupt` | `{threadId?, turnId}` | `{ok}` (barge-in) |
-| POST | `/stop` | `{threadId?}` | `{ok}` |
-| GET | `/auth/status` | — | codex device-login state |
-| POST | `/auth/login` | — | `{url, code}` → open URL, type code |
-| POST | `/auth/login/cancel` | — | cancels; restores auth.json backup |
-| POST | `/auth/logout` | — | removes auth.json (backed up) |
-| GET | `/usage` | — | local voice minutes (5h/24h/week/today) |
-| GET | `/plan-usage` | — | ChatGPT plan buckets (primary/secondary windows) |
-
-### Persona & delegation (app integration points)
-
-- **Persona** — pass `persona=` implementing `PersonaProvider` (`persona(profile, language)` +
-  `display_name(profile)`) to `LiveBroker` to speak with your product's identity. The prompt is
-  assembled in `gptlive.instructions`: persona + language mirroring + live etiquette +
-  **delegation policy** (without it the model delegates every fragment and floods your task lane).
-- **Delegation** — with `handoff="client"` (default) the voice model marks tasks as
-  `delegation.created`; the *browser client* executes them via your `onDelegation` callback and
-  feeds results back with `delegation.context.append`. The thread agent is explicitly
-  neutralized ("reply skip, no tools") so the ChatGPT plan never pays for phantom background
-  tool work. `handoff="server"` instead lets the Codex thread agent execute tasks.
-
-## Configuration
-
-| env / setting | meaning |
-|---|---|
-| `CODEX_HOME` | where `auth.json` lives (default `~/.codex`) |
-| `TALK_CODEX_AGENT_MODEL` or `LiveBroker(agent_model=...)` | force a ChatGPT-valid thread model (e.g. `gpt-5.6-sol`) when the machine default is a custom proxy — otherwise delegated turns 400 |
-| `LiveBroker(handoff=...)` | `client` (default) or `server` |
-
-## Gotchas encoded in code (learned the hard way)
-
-- The broker strips `OPENAI_API_KEY`/`CODEX_API_KEY` from the app-server env — otherwise the
-  session leaves subscription auth and 401s/bills the wrong lane.
-- On servers, `codex` often isn't on the service `PATH` (`~/.npm-global/bin` missing) — resolved
-  via candidate paths + `bash -lc` fallback.
-- `codex app-server` needs `-c model_provider=openai` on boxes with a custom default provider.
-- JSON-RPC responses are located by **id scan** of the whole buffer; a positional cursor goes
-  stale when the reader prunes and silently drops your response.
-- Voice allowance is a separate rolling 5-hour bucket per plan (not exposed by the API) — the
-  client meters `audio_duration_ms` locally and reports on hang-up.
-- Old app-servers may reject `clientManagedHandoffs`/`delegationAckFiller` — the broker drops
-  them one group per `unknown field` error and reports `droppedFields`/`handoffDegraded` so the
-  UI can warn instead of failing silently.
-
-## Tests
+## tests
 
 ```bash
-pip install pytest
+python -m pip install -e ".[server,dev]"
 python -m pytest -q
+bash tools/client-load-test.sh
+python -m pip install build
+python -m build --wheel
 ```
 
-Regression tests (no network, no `codex` binary needed) cover: buffer-pruning-safe RPC,
-unknown-field drop reporting + handoff degradation, stale-thread recovery keeping session
-language, interrupt off the event loop, junk-delegation filtering, bubble rotation semantics,
-plus a **fake app-server end-to-end smoke**: a stub `codex` binary speaks the JSON-RPC protocol
-and a full `/session` mint succeeds through the HTTP layer.
+The Python tests use a fake Codex app-server and do not contact OpenAI. They check session negotiation, recovery, access dependencies, auth isolation, and usage. The client check loads the browser module in Node. A real voice call needs a browser, microphone, signed-in Codex CLI, and network access.
 
-## Credits & license
+## credits and license
 
-MIT — see [LICENSE](LICENSE). Extracted from
-[Synero/hermes-live-voice](https://github.com/Synero/hermes-live-voice), whose voice auth and
-session plumbing derive from [TheSmokeDev/hermes-talk](https://github.com/TheSmokeDev/hermes-talk) (MIT).
-Codex and GPT are OpenAI products; this project is **not affiliated with or endorsed by OpenAI**.
-Respect the OpenAI terms for your account; never share accounts or bypass rate limits.
+MIT. See [LICENSE](LICENSE). This project was extracted from [Synero/hermes-live-voice](https://github.com/Synero/hermes-live-voice). Its voice auth and session plumbing derive from [TheSmokeDev/hermes-talk](https://github.com/TheSmokeDev/hermes-talk), also MIT.
+
+Codex and GPT are OpenAI products. This project is independent of OpenAI. Follow the terms for your account and do not share account credentials.

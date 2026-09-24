@@ -32,6 +32,12 @@ def stub_server() -> CodexAppServer:
     return CodexAppServer(spawn=False)
 
 
+def test_broker_waits_for_first_session_before_starting_codex():
+    broker = LiveBroker()
+    assert broker.srv.proc is None
+    broker.close()
+
+
 def test_request_survives_buffer_pruning():
     """A response for a late request id must be seen even after the reader pruned the buffer."""
     srv = stub_server()

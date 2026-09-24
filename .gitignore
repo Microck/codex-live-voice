@@ -10,3 +10,4 @@ data/
 node_modules/
 # Env
 .env
+auth.json*

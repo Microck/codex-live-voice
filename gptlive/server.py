@@ -6,7 +6,7 @@ Mount into any FastAPI/Starlette app:
     from gptlive.server import mount
 
     app = FastAPI()
-    mount(app, prefix="/api/voice")          # or: router = make_router()
+    mount(app, access_dependency=require_user, prefix="/api/voice")
 
 Routes (all JSON):
     GET  /status                  → {ok, codexFound, loggedIn, voices}
@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from .broker import LiveBroker, QuotaExceededError
 from .codexappserver import resolve_codex_binary, V3_VOICES
@@ -36,9 +38,10 @@ from .voiceusage import VoiceUsageStore
 _log = logging.getLogger("gptlive.server")
 
 try:
-    from fastapi import APIRouter, HTTPException, Request
+    from fastapi import APIRouter, Depends, HTTPException, Request
 except ImportError:  # pragma: no cover
     APIRouter = None
+    Depends = None
     HTTPException = None
     Request = None
 
@@ -130,11 +133,13 @@ def _read_access_token() -> str:
         return ""
 
 
-def make_router(service: LiveVoiceService):
-    """Build an APIRouter with the standard routes (requires fastapi)."""
+def make_router(service: LiveVoiceService, *, access_dependency: Callable[..., Any]):
+    """Build routes behind an app-owned FastAPI access dependency."""
     if APIRouter is None:
-        raise ImportError("fastapi is required for make_router(); pip install gpt-live-voice[server]")
-    router = APIRouter()
+        raise ImportError("fastapi is required for make_router(); pip install codex-live-voice[server]")
+    if not callable(access_dependency):
+        raise TypeError("access_dependency must be a FastAPI dependency")
+    router = APIRouter(dependencies=[Depends(access_dependency)])
 
     @router.get("/status")
     async def status() -> dict:
@@ -212,17 +217,20 @@ def make_router(service: LiveVoiceService):
     return router
 
 
-def mount(app, service: LiveVoiceService | None = None, prefix: str = "/api/voice",
+def mount(app, *, access_dependency: Callable[..., Any], service: LiveVoiceService | None = None,
+          prefix: str = "/api/voice",
           cors_origins: list[str] | None = None, data_dir: str | None = None):
     """Mount the voice routes on a FastAPI app; returns the service.
 
+    access_dependency: app-owned FastAPI dependency that denies unauthorized
+    requests. It covers session creation, login/logout, and usage routes.
     cors_origins: list of origins allowed to call these endpoints from a
     browser (e.g. ["http://localhost:5173"]). None disables CORS handling.
     data_dir: where voice-usage.json is stored (defaults to ./data — pass an
     app-owned path in production).
     """
     service = service or LiveVoiceService(data_dir=data_dir)
-    app.include_router(make_router(service), prefix=prefix)
+    app.include_router(make_router(service, access_dependency=access_dependency), prefix=prefix)
     if cors_origins:
         try:
             from fastapi.middleware.cors import CORSMiddleware

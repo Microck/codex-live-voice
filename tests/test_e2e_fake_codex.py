@@ -6,6 +6,7 @@ Also proves the env contract: the spawned child never sees OPENAI_API_KEY.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -13,10 +14,11 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import httpx
 
 fastapi = pytest.importorskip("fastapi")
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from gptlive.codexappserver import CodexAppServer  # noqa: E402
@@ -79,21 +81,27 @@ def fake_codex(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def app_with_fake_codex(fake_codex, tmp_path, monkeypatch):
+def app_with_fake_codex(fake_codex, tmp_path):
     # force the broker to use the fake binary regardless of which/PATH
     from gptlive.broker import LiveBroker
 
     srv = CodexAppServer(binary=str(fake_codex))
     broker = LiveBroker(persona=DefaultPersona(name="Nova"), app_server=srv)
     app = FastAPI()
-    service = mount(app, prefix="/api/voice", data_dir=str(tmp_path))
-    service.broker = broker
-    return app, service
+
+    def require_test_access(request: Request) -> None:
+        if request.headers.get("X-Test-Access") != "allowed":
+            raise HTTPException(status_code=403)
+
+    service = LiveVoiceService(broker=broker, data_dir=str(tmp_path))
+    mount(app, service=service, prefix="/api/voice", access_dependency=require_test_access)
+    yield app, service
+    srv.close()
 
 
-def test_full_session_mint_through_http(app_with_fake_codex, tmp_path):
-    app, service = app_with_fake_codex
-    client = TestClient(app)
+def test_full_session_mint_through_http(app_with_fake_codex):
+    app, _ = app_with_fake_codex
+    client = TestClient(app, headers={"X-Test-Access": "allowed"})
 
     status = client.get("/api/voice/status").json()
     assert status["ok"] is True
@@ -117,22 +125,47 @@ def test_full_session_mint_through_http(app_with_fake_codex, tmp_path):
     assert client.post("/api/voice/usage/report", json={"durationMs": 60000, "audioMs": 30000}).json() == {"ok": True}
     usage = client.get("/api/voice/usage").json()
     assert usage["today"]["sessions"] == 1
-    service.broker.close()
+
+
+def test_routes_require_app_access(app_with_fake_codex):
+    app, _ = app_with_fake_codex
+    client = TestClient(app)
+    assert client.get("/api/voice/status").status_code == 403
+    assert client.post("/api/voice/session", json={"offer": "v=0"}).status_code == 403
+    assert client.post("/api/voice/auth/logout").status_code == 403
+
+
+def test_example_allows_local_page_and_rejects_other_callers(tmp_path, monkeypatch):
+    """A browser page on another origin cannot use the example's account routes."""
+    from examples.server import app
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    async def check():
+        local = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+        async with httpx.AsyncClient(transport=local, base_url="http://127.0.0.1:8000") as client:
+            status = await client.get("/api/voice/status", headers={"Origin": "http://127.0.0.1:8000"})
+            assert status.status_code == 200
+            foreign = await client.post("/api/voice/auth/logout", headers={"Origin": "http://evil.example"})
+            assert foreign.status_code == 403
+            cross_site = await client.post("/api/voice/auth/logout", headers={"Sec-Fetch-Site": "cross-site"})
+            assert cross_site.status_code == 403
+
+        remote = httpx.ASGITransport(app=app, client=("192.0.2.1", 50000))
+        async with httpx.AsyncClient(transport=remote, base_url="http://127.0.0.1:8000") as client:
+            assert (await client.get("/api/voice/status")).status_code == 403
+
+    asyncio.run(check())
 
 
 def test_session_rejects_missing_offer(app_with_fake_codex):
     app, _ = app_with_fake_codex
-    client = TestClient(app)
+    client = TestClient(app, headers={"X-Test-Access": "allowed"})
     resp = client.post("/api/voice/session", json={})
     assert resp.status_code == 400
-    service_close(app)
 
 
-def service_close(app):
-    pass
-
-
-def test_env_stripping_verified_by_fake_server(fake_codex, tmp_path):
+def test_env_stripping_verified_by_fake_server(fake_codex):
     """The fake codex asserts on startup that API keys are absent — reaching a
     successful mint here proves the strip happened in the real spawn path."""
     srv = CodexAppServer(binary=str(fake_codex))
@@ -141,4 +174,4 @@ def test_env_stripping_verified_by_fake_server(fake_codex, tmp_path):
     broker = LiveBroker(persona=DefaultPersona(name="Nova"), app_server=srv)
     result = broker.start_session("v=0")
     assert result["answer"]
-    broker.close()
+    srv.close()

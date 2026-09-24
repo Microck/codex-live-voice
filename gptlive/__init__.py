@@ -1,4 +1,4 @@
-"""gpt-live-voice — standalone GPT-Live-1 realtime voice engine.
+"""codex-live-voice — standalone GPT-Live-1 realtime voice engine.
 
 Extracted from the hermes-live-voice plugin so any web app can deploy
 full-duplex voice backed by a ChatGPT/Codex subscription:
@@ -24,7 +24,7 @@ from .instructions import (
 )
 from .voiceusage import VoiceUsageStore
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "LiveBroker",
