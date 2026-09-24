@@ -27,9 +27,15 @@ def make_broker(app_server: CodexAppServer) -> LiveBroker:
     return broker
 
 
+class StubAppServer(CodexAppServer):
+    """Keep unit tests independent of an installed Codex CLI."""
+
+    def ensure(self) -> None:
+        pass
+
+
 def stub_server() -> CodexAppServer:
-    """An app-server that never spawns: tests stub request()/notifs directly."""
-    return CodexAppServer(spawn=False)
+    return StubAppServer(spawn=False)
 
 
 def test_broker_waits_for_first_session_before_starting_codex():

@@ -4,8 +4,6 @@
 
 It uses the Codex login in `~/.codex/auth.json` or `$CODEX_HOME/auth.json`. You do not need a separate OpenAI API key for the voice session. The broker runs under your Codex account, so keep its HTTP routes behind your app's access controls.
 
-[source](https://github.com/Microck/codex-live-voice) | [license](LICENSE)
-
 ## what is included
 
 - `gptlive/`: Python broker and optional FastAPI router.
@@ -124,9 +122,3 @@ python -m build --wheel
 ```
 
 The Python tests use a fake Codex app-server and do not contact OpenAI. They check session negotiation, recovery, access dependencies, auth isolation, and usage. The client check loads the browser module in Node. A real voice call needs a browser, microphone, signed-in Codex CLI, and network access.
-
-## credits and license
-
-MIT. See [LICENSE](LICENSE). This project was extracted from [Synero/hermes-live-voice](https://github.com/Synero/hermes-live-voice). Its voice auth and session plumbing derive from [TheSmokeDev/hermes-talk](https://github.com/TheSmokeDev/hermes-talk), also MIT.
-
-Codex and GPT are OpenAI products. This project is independent of OpenAI. Follow the terms for your account and do not share account credentials.
